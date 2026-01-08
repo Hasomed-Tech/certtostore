@@ -1,4 +1,4 @@
-module github.com/google/certtostore
+module github.com/Hasomed-Tech/certtostore
 
 go 1.18
 

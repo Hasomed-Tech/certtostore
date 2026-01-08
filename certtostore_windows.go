@@ -23,8 +23,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +48,8 @@ import (
 	"golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/sys/windows"
 )
+
+var ErrNotFound = errors.New("not found")
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
 type WinCertStorage interface {
@@ -209,6 +213,7 @@ var (
 
 	certDeleteCertificateFromStore    = crypt32.MustFindProc("CertDeleteCertificateFromStore")
 	certFindCertificateInStore        = crypt32.MustFindProc("CertFindCertificateInStore")
+	certEnumCertificatesInStore       = crypt32.MustFindProc("CertEnumCertificatesInStore")
 	certFreeCertificateChain          = crypt32.MustFindProc("CertFreeCertificateChain")
 	certGetCertificateChain           = crypt32.MustFindProc("CertGetCertificateChain")
 	certGetIntendedKeyUsage           = crypt32.MustFindProc("CertGetIntendedKeyUsage")
@@ -1824,4 +1829,42 @@ func (w *WinCertStore) CertByCommonName(commonName string) (*x509.Certificate,
 		return cert, certContext, w.certChains, nil
 	}
 	return nil, nil, nil, cryptENotFound
+}
+
+// CertByThumbprint searches for a certificate by its thumbprint (SHA-1 hash) in the store.
+// The returned *windows.CertContext must be freed by the caller using
+// FreeCertContext to avoid resource leaks.
+func (w *WinCertStore) CertByThumbprint(thumbprint [sha1.Size]byte) (*x509.Certificate,
+	*windows.CertContext, error) {
+	storeHandle, err := w.storeHandle(w.storeDomain(), my)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open certificate store: %v", err)
+	}
+
+	var prev *windows.CertContext
+	for {
+		h, _, err := certEnumCertificatesInStore.Call(
+			uintptr(storeHandle),
+			uintptr(unsafe.Pointer(prev)),
+		)
+		if h == 0 {
+			// Actual error, or simply not found?
+			tp := hex.EncodeToString(thumbprint[:])
+			if errno, ok := err.(syscall.Errno); ok && errno == cryptENotFound {
+				return nil, nil, fmt.Errorf("%w: certificate with thumbprint %s", ErrNotFound, tp)
+			}
+			return nil, nil, err
+		}
+		prev = (*windows.CertContext)(unsafe.Pointer(h))
+
+		cert, err := certContextToX509(prev)
+		if err != nil {
+			FreeCertContext(prev)
+			return nil, nil, err
+		}
+
+		if sha1.Sum(cert.Raw) == thumbprint {
+			return cert, prev, nil
+		}
+	}
 }

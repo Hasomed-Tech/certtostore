@@ -1843,6 +1843,8 @@ func (w *WinCertStore) CertByThumbprint(thumbprint [sha1.Size]byte) (*x509.Certi
 
 	var prev *windows.CertContext
 	for {
+		// CertEnumCertificatesInStore frees the certificate context passed to it, so we don't need
+		// to do that.
 		h, _, err := certEnumCertificatesInStore.Call(
 			uintptr(storeHandle),
 			uintptr(unsafe.Pointer(prev)),
@@ -1859,8 +1861,9 @@ func (w *WinCertStore) CertByThumbprint(thumbprint [sha1.Size]byte) (*x509.Certi
 
 		cert, err := certContextToX509(prev)
 		if err != nil {
-			FreeCertContext(prev)
-			return nil, nil, err
+			// If we can't parse this certificate, we'll assume it's not the one we're looking for.
+			// We'll just move on to the next certificate in the list.
+			continue
 		}
 
 		if sha1.Sum(cert.Raw) == thumbprint {
